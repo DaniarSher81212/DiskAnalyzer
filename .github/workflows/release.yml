@@ -40,6 +40,7 @@ jobs:
 
       - name: Rename artifact
         shell: bash
+        if: matrix.artifact != matrix.asset_name
         run: mv dist/${{ matrix.artifact }} dist/${{ matrix.asset_name }}
 
       - name: Upload artifact
