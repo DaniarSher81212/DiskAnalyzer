@@ -32,17 +32,17 @@
 
 ```bash
 # Linux — сделать исполняемым после скачивания
-wget https://github.com/DaniarSher81212/DiskAnalyzer/releases/download/v1.4.0/disk-analyzer
+wget https://github.com/DaniarSher81212/DiskAnalyzer/releases/download/v1.5.0/disk-analyzer
 chmod +x disk-analyzer
 ./disk-analyzer help
 
 # macOS
-wget https://github.com/DaniarSher81212/DiskAnalyzer/releases/download/v1.4.0/disk-analyzer-macos
+wget https://github.com/DaniarSher81212/DiskAnalyzer/releases/download/v1.5.0/disk-analyzer-macos
 chmod +x disk-analyzer-macos
 ./disk-analyzer-macos help
 
 # Windows (PowerShell)
-Invoke-WebRequest -Uri "https://github.com/DaniarSher81212/DiskAnalyzer/releases/download/v1.4.0/disk-analyzer.exe" -OutFile disk-analyzer.exe
+Invoke-WebRequest -Uri "https://github.com/DaniarSher81212/DiskAnalyzer/releases/download/v1.5.0/disk-analyzer.exe" -OutFile disk-analyzer.exe
 .\disk-analyzer.exe help
 ```
 
