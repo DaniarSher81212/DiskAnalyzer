@@ -11,6 +11,147 @@ from . import config as cfg_module
 from . import db, duplicates, explore, scanner, search, sizes
 
 
+def _c(code: str, text: str) -> str:
+    """Обернуть текст в ANSI-код, если терминал поддерживает цвета."""
+    if not sys.stdout.isatty():
+        return text
+    return f"\033[{code}m{text}\033[0m"
+
+
+def _bold(t: str) -> str: return _c("1", t)
+def _cyan(t: str) -> str: return _c("36", t)
+def _yellow(t: str) -> str: return _c("33", t)
+def _dim(t: str) -> str: return _c("2", t)
+
+
+def cmd_help(args):
+    W = 64
+    line = "─" * W
+
+    def section(title: str) -> None:
+        print(f"\n{_bold(_cyan(title))}")
+        print(_dim(line))
+
+    def cmd(name: str, desc: str) -> None:
+        print(f"  {_bold(_yellow(f'disk-analyzer {name}'))}")
+        print(f"    {desc}")
+
+    def opt(flag: str, desc: str) -> None:
+        print(f"    {_cyan(flag):<30} {desc}")
+
+    def example(line_: str) -> None:
+        print(f"    {_dim('$')} {line_}")
+
+    print(_bold(f"\ndisk-analyzer — анализатор содержимого дисков"))
+    print(_dim(f"Сохраняет каталог файловой системы в SQLite и позволяет исследовать его"))
+    print(_dim(f"через команды CLI или диалог с AI-ассистентом.\n"))
+
+    # ── Первый запуск ──────────────────────────────────────
+    section("ПЕРВЫЙ ЗАПУСК")
+    cmd("setup", "Мастер настройки: провайдер, API-ключ, URL Ollama")
+    print()
+    example("disk-analyzer setup")
+    example("disk-analyzer config show        # показать текущие настройки")
+
+    # ── Сканирование ───────────────────────────────────────
+    section("СКАНИРОВАНИЕ")
+    cmd("scan <путь>", "Просканировать путь и сохранить каталог в базу данных")
+    print()
+    opt("--one-filesystem",    "Не выходить за пределы одной ФС (нужно при сканировании /)")
+    opt("--follow-reparse",    "Заходить в symlink и junction-точки")
+    opt("--db <файл>",         "Путь к базе данных (по умолчанию disk_catalog.db)")
+    print()
+    example("disk-analyzer scan /home")
+    example("disk-analyzer scan / --one-filesystem")
+    example(r"disk-analyzer scan C:\\")
+
+    # ── Анализ ─────────────────────────────────────────────
+    section("АНАЛИЗ")
+    cmd("stats",               "История сканирований: пути, даты, размеры")
+    cmd("top [files|dirs|both|ext]", "Крупнейшие файлы / папки / расширения")
+    cmd("duplicates",          "Группы файлов-дубликатов по содержимому (BLAKE2b)")
+    cmd("search",              "Поиск по имени, расширению, размеру, дате")
+    cmd("explore [путь]",      "Интерактивный проводник: ходить по папкам в терминале")
+    print()
+    opt("--limit N",           "Количество результатов")
+    opt("--scan-id N",         "Использовать конкретный скан")
+    opt("--root <путь>",       "Взять последний скан для указанного корня")
+    print()
+    example("disk-analyzer top both --limit 30")
+    example("disk-analyzer top ext")
+    example("disk-analyzer duplicates --min-size 1048576")
+    example("disk-analyzer search --ext .mp4 --min-size 104857600")
+    example("disk-analyzer search --name backup --after 2024-01-01")
+    example("disk-analyzer explore /home/dan")
+
+    # ── Параметры search ───────────────────────────────────
+    section("ПАРАМЕТРЫ ПОИСКА (search)")
+    opt("--name <подстрока>",  "Часть имени файла или папки")
+    opt("--ext <.расш>",       "Расширение, например .pdf или .mp4")
+    opt("--min-size N",        "Минимальный размер в байтах")
+    opt("--max-size N",        "Максимальный размер в байтах")
+    opt("--after YYYY-MM-DD",  "Дата изменения — от")
+    opt("--before YYYY-MM-DD", "Дата изменения — до")
+    opt("--files-only",        "Только файлы")
+    opt("--dirs-only",         "Только папки")
+
+    # ── Проводник ──────────────────────────────────────────
+    section("УПРАВЛЕНИЕ В ПРОВОДНИКЕ (explore)")
+    opt("<номер>",             "Зайти в папку / показать информацию о файле")
+    opt("u",                   "Подняться на уровень вверх")
+    opt("n / p",               "Следующая / предыдущая страница (по 25 элементов)")
+    opt("q",                   "Выйти из проводника")
+
+    # ── AI-чат ─────────────────────────────────────────────
+    section("AI-ЧАТ")
+    cmd("chat [--provider anthropic|openai|ollama]",
+        "Диалог с AI-ассистентом поверх каталога дисков")
+    print()
+    print("    AI умеет:")
+    for item in [
+        "находить что занимает больше всего места",
+        "искать дубликаты и предлагать их удалить (с подтверждением)",
+        "искать файлы по типу, размеру, дате",
+        "запускать сканирование если каталога нет",
+        "отвечать на вопросы про структуру диска",
+    ]:
+        print(f"    {_dim('·')} {item}")
+    print()
+    example("disk-analyzer chat")
+    example("disk-analyzer chat --provider openai")
+    print()
+    print(f"    {_dim('Примеры запросов к AI:')}")
+    for q in [
+        "Что занимает больше всего места?",
+        "Найди дубликаты и удали их",
+        "Покажи все .iso файлы крупнее 1 ГБ",
+        "Есть ли старые логи в /var/log?",
+    ]:
+        print(f"    {_dim('>')} {q}")
+
+    # ── Провайдеры ─────────────────────────────────────────
+    section("НАСТРОЙКА ПРОВАЙДЕРОВ")
+    print(f"  Приоритет: {_bold('CLI-флаг')} → {_bold('ENV')} → {_bold('конфиг-файл')}\n")
+    print(f"  {'Провайдер':<12} {'ENV-ключ':<30} {'Конфиг-файл'}")
+    print(f"  {_dim('─'*12)} {_dim('─'*30)} {_dim('─'*20)}")
+    rows = [
+        ("anthropic", "ANTHROPIC_API_KEY", "~/.config/disk-analyzer/config.toml"),
+        ("openai",    "OPENAI_API_KEY",    "(тот же файл)"),
+        ("ollama",    "DISK_ANALYZER_OLLAMA_URL", "(тот же файл)"),
+    ]
+    for name, env, conf in rows:
+        print(f"  {_yellow(name):<12} {env:<30} {_dim(conf)}")
+
+    # ── Конфиг ─────────────────────────────────────────────
+    section("УПРАВЛЕНИЕ КОНФИГОМ")
+    cmd("setup",               "Интерактивный мастер первого запуска")
+    cmd("config show",         "Показать текущие настройки (ключи замаскированы)")
+    print()
+    print(f"  Конфиг хранится в: {_cyan(str(cfg_module.CONFIG_PATH))}")
+
+    print()
+
+
 def human_size(n: float) -> str:
     for unit in ("Б", "КБ", "МБ", "ГБ", "ТБ", "ПБ"):
         if abs(n) < 1024:
@@ -292,6 +433,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="LLM-провайдер (по умолчанию — из конфига или anthropic)",
     )
     p_chat.set_defaults(func=cmd_chat)
+
+    p_help = sub.add_parser("help", help="Полное руководство по всем командам")
+    p_help.set_defaults(func=cmd_help)
 
     p_setup = sub.add_parser("setup", help="Интерактивная настройка: провайдер, API-ключи")
     p_setup.set_defaults(func=cmd_setup)
