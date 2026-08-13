@@ -56,6 +56,10 @@ jobs:
       contents: write
 
     steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -70,3 +74,13 @@ jobs:
             dist/disk-analyzer-macos
             dist/disk-analyzer.exe
           generate_release_notes: true
+
+      - name: Update README version links
+        run: |
+          VERSION=${GITHUB_REF_NAME}
+          sed -i "s|/download/v[0-9]*\.[0-9]*\.[0-9]*/|/download/${VERSION}/|g" README.md
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          git diff --staged --quiet || git commit -m "Update README download links to ${VERSION}"
+          git push
