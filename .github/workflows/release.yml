@@ -78,9 +78,11 @@ jobs:
       - name: Update README version links
         run: |
           VERSION=${GITHUB_REF_NAME}
+          git fetch origin master
+          git checkout -B master origin/master
           sed -i "s|/download/v[0-9]*\.[0-9]*\.[0-9]*/|/download/${VERSION}/|g" README.md
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add README.md
           git diff --staged --quiet || git commit -m "Update README download links to ${VERSION}"
-          git push origin HEAD:master
+          git push origin master
