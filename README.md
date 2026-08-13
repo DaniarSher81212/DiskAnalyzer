@@ -32,15 +32,18 @@
 
 ```bash
 # Linux — сделать исполняемым после скачивания
+wget https://github.com/DaniarSher81212/DiskAnalyzer/releases/download/v1.2.1/disk-analyzer
 chmod +x disk-analyzer
 ./disk-analyzer help
 
 # macOS
+wget https://github.com/DaniarSher81212/DiskAnalyzer/releases/download/v1.2.1/disk-analyzer-macos
 chmod +x disk-analyzer-macos
 ./disk-analyzer-macos help
 
-# Windows
-disk-analyzer.exe help
+# Windows (PowerShell)
+Invoke-WebRequest -Uri "https://github.com/DaniarSher81212/DiskAnalyzer/releases/download/v1.2.1/disk-analyzer.exe" -OutFile disk-analyzer.exe
+.\disk-analyzer.exe help
 ```
 
 > **macOS:** при первом запуске Gatekeeper может заблокировать файл. Разрешите через:
