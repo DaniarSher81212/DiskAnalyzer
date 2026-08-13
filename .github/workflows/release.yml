@@ -21,6 +21,7 @@ jobs:
             asset_name: disk-analyzer-macos
 
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@v4
@@ -33,6 +34,8 @@ jobs:
         run: pip install -r requirements-dev.txt
 
       - name: Build
+        env:
+          PYTHONUTF8: "1"
         run: python build.py
 
       - name: Rename artifact
