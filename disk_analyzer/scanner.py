@@ -27,7 +27,7 @@ class _Frame:
         self.size = 0
 
 
-def scan(root: str, conn: sqlite3.Connection, follow_reparse: bool = False, one_filesystem: bool = False) -> int:
+def scan(root: str, conn: sqlite3.Connection, follow_reparse: bool = False, one_filesystem: bool = False, on_progress=None) -> int:
     """Сканирует `root` и сохраняет каталог в БД. Возвращает scan_id."""
     root = str(Path(root).resolve())
     started_at = datetime.now(timezone.utc).isoformat()
@@ -108,6 +108,8 @@ def scan(root: str, conn: sqlite3.Connection, follow_reparse: bool = False, one_
                     frame.size += size
                     file_count += 1
                     total_size += size
+                    if on_progress and file_count % 1000 == 0:
+                        on_progress(file_count, dir_count, total_size)
                     if len(batch) >= BATCH_SIZE:
                         flush()
             except OSError as exc:

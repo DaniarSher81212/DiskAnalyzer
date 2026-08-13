@@ -35,6 +35,7 @@ CREATE INDEX IF NOT EXISTS idx_entries_parent ON entries(scan_id, parent);
 CREATE INDEX IF NOT EXISTS idx_entries_size ON entries(scan_id, size);
 CREATE INDEX IF NOT EXISTS idx_entries_ext ON entries(scan_id, ext);
 CREATE INDEX IF NOT EXISTS idx_entries_name ON entries(scan_id, name);
+CREATE INDEX IF NOT EXISTS idx_entries_path ON entries(scan_id, path);
 """
 
 if getattr(sys, "frozen", False):

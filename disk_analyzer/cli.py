@@ -72,6 +72,7 @@ def cmd_help(args):
     cmd("top [files|dirs|both|ext]", "Крупнейшие файлы / папки / расширения")
     cmd("duplicates",          "Группы файлов-дубликатов по содержимому (BLAKE2b)")
     cmd("search",              "Поиск по имени, расширению, размеру, дате")
+    cmd("diff [scan_a] [scan_b]", "Сравнить два скана: что появилось, исчезло, изменилось")
     cmd("explore [путь]",      "Интерактивный проводник: ходить по папкам в терминале")
     print()
     opt("--limit N",           "Количество результатов")
@@ -83,6 +84,8 @@ def cmd_help(args):
     example("disk-analyzer duplicates --min-size 1048576")
     example("disk-analyzer search --ext .mp4 --min-size 104857600")
     example("disk-analyzer search --name backup --after 2024-01-01")
+    example("disk-analyzer diff              # два последних скана")
+    example("disk-analyzer diff 12 14        # конкретные сканы")
     example("disk-analyzer explore /home/dan")
 
     # ── Параметры search ───────────────────────────────────
@@ -177,7 +180,19 @@ def cmd_scan(args):
     conn = db.connect(args.db)
     print(f"Сканирование {args.path} ...")
     t0 = time.time()
-    scan_id = scanner.scan(args.path, conn, follow_reparse=args.follow_reparse, one_filesystem=args.one_filesystem)
+
+    def on_progress(fc: int, dc: int, ts: int) -> None:
+        if sys.stdout.isatty():
+            print(f"\r  Файлов: {fc:,}  Папок: {dc:,}  Объём: {human_size(ts)}   ", end="", flush=True)
+
+    scan_id = scanner.scan(
+        args.path, conn,
+        follow_reparse=args.follow_reparse,
+        one_filesystem=args.one_filesystem,
+        on_progress=on_progress,
+    )
+    if sys.stdout.isatty():
+        print()  # сброс строки прогресса
     elapsed = time.time() - t0
     row = conn.execute(
         "SELECT file_count, dir_count, total_size, errors FROM scans WHERE id = ?",
@@ -274,6 +289,111 @@ def cmd_explore(args):
             "SELECT root FROM scans WHERE id = ?", (scan_id,)
         ).fetchone()[0]
     explore.run(conn, scan_id, start_path)
+
+
+def cmd_diff(args):
+    conn = db.connect(args.db)
+
+    if args.scan_a is not None and args.scan_b is not None:
+        id_a, id_b = args.scan_a, args.scan_b
+    else:
+        # По умолчанию: два последних скана одного корня, иначе — любые два последних
+        latest = conn.execute(
+            "SELECT root FROM scans WHERE finished_at IS NOT NULL ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        if not latest:
+            print("Нет завершённых сканирований.", file=sys.stderr)
+            sys.exit(1)
+        rows = conn.execute(
+            "SELECT id FROM scans WHERE finished_at IS NOT NULL AND root = ? ORDER BY id DESC LIMIT 2",
+            (latest[0],),
+        ).fetchall()
+        if len(rows) < 2:
+            rows = conn.execute(
+                "SELECT id FROM scans WHERE finished_at IS NOT NULL ORDER BY id DESC LIMIT 2"
+            ).fetchall()
+        if len(rows) < 2:
+            print("Нужно минимум два завершённых скана.", file=sys.stderr)
+            sys.exit(1)
+        id_b, id_a = rows[0][0], rows[1][0]
+
+    info_a = conn.execute("SELECT root, started_at FROM scans WHERE id = ?", (id_a,)).fetchone()
+    info_b = conn.execute("SELECT root, started_at FROM scans WHERE id = ?", (id_b,)).fetchone()
+    if not info_a or not info_b:
+        print("Один из указанных scan_id не найден.", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"\nСравнение сканов:")
+    print(f"  A [{id_a}] {info_a[0]}  ({info_a[1][:19]})")
+    print(f"  B [{id_b}] {info_b[0]}  ({info_b[1][:19]})")
+    if info_a[0] != info_b[0]:
+        print(_dim("  (разные корни — различий может быть много)"))
+    print()
+
+    fetch = args.limit + 1  # +1 чтобы понять есть ли ещё
+
+    new_rows = conn.execute("""
+        SELECT b.path, b.size FROM entries b
+        WHERE b.scan_id = ? AND b.is_dir = 0
+          AND NOT EXISTS (SELECT 1 FROM entries WHERE scan_id = ? AND path = b.path)
+        ORDER BY b.size DESC LIMIT ?
+    """, (id_b, id_a, fetch)).fetchall()
+
+    del_rows = conn.execute("""
+        SELECT a.path, a.size FROM entries a
+        WHERE a.scan_id = ? AND a.is_dir = 0
+          AND NOT EXISTS (SELECT 1 FROM entries WHERE scan_id = ? AND path = a.path)
+        ORDER BY a.size DESC LIMIT ?
+    """, (id_a, id_b, fetch)).fetchall()
+
+    changed_rows = conn.execute("""
+        SELECT a.path, a.size, b.size FROM entries a
+        JOIN entries b ON a.path = b.path
+        WHERE a.scan_id = ? AND b.scan_id = ?
+          AND a.is_dir = 0 AND b.is_dir = 0 AND a.size != b.size
+        ORDER BY ABS(CAST(b.size AS INTEGER) - CAST(a.size AS INTEGER)) DESC LIMIT ?
+    """, (id_a, id_b, fetch)).fetchall()
+
+    if not new_rows and not del_rows and not changed_rows:
+        print("Различий не обнаружено.")
+        return
+
+    limit = args.limit
+
+    if new_rows:
+        has_more = len(new_rows) > limit
+        shown = new_rows[:limit]
+        total_size = sum(s for _, s in shown)
+        print(_bold(_cyan(f"НОВЫЕ ({len(shown)}{'+'  if has_more else ''} файлов, +{human_size(total_size)}):")))
+        for path, size in shown:
+            print(f"  {_cyan('+'):>3} {human_size(size):>12}  {path}")
+        if has_more:
+            print(_dim(f"  ... показано {limit}, используйте --limit для большего"))
+        print()
+
+    if del_rows:
+        has_more = len(del_rows) > limit
+        shown = del_rows[:limit]
+        total_size = sum(s for _, s in shown)
+        print(_bold(_yellow(f"УДАЛЁННЫЕ ({len(shown)}{'+'  if has_more else ''} файлов, -{human_size(total_size)}):")))
+        for path, size in shown:
+            print(f"  {_yellow('-'):>3} {human_size(size):>12}  {path}")
+        if has_more:
+            print(_dim(f"  ... показано {limit}, используйте --limit для большего"))
+        print()
+
+    if changed_rows:
+        has_more = len(changed_rows) > limit
+        shown = changed_rows[:limit]
+        print(_bold(f"ИЗМЕНЁННЫЕ ({len(shown)}{'+'  if has_more else ''} файлов):"))
+        for path, size_a, size_b in shown:
+            delta = size_b - size_a
+            sign = "+" if delta >= 0 else ""
+            print(f"  {'~':>3} {human_size(size_b):>12}  {path}  "
+                  f"{_dim(f'({human_size(size_a)} → {human_size(size_b)}, {sign}{human_size(delta)})')}")
+        if has_more:
+            print(_dim(f"  ... показано {limit}, используйте --limit для большего"))
+        print()
 
 
 def cmd_setup(args):
@@ -490,6 +610,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_search.add_argument("--files-only", action="store_true")
     p_search.add_argument("--limit", type=int, default=100)
     p_search.set_defaults(func=cmd_search)
+
+    p_diff = sub.add_parser("diff", help="Сравнить два скана — что появилось, исчезло, изменилось")
+    p_diff.add_argument("scan_a", type=int, nargs="?", help="ID старого скана (по умолчанию — предпоследний)")
+    p_diff.add_argument("scan_b", type=int, nargs="?", help="ID нового скана (по умолчанию — последний)")
+    p_diff.add_argument("--limit", type=int, default=20, help="Сколько файлов показать в каждой категории")
+    p_diff.set_defaults(func=cmd_diff)
 
     p_explore = sub.add_parser("explore", help="Интерактивный просмотр каталога (зайти/выйти из папок)")
     p_explore.add_argument("path", nargs="?", default=None, help="С какой папки начать (по умолчанию — корень скана)")
