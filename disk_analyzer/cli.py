@@ -74,21 +74,23 @@ def cmd_help(args):
     cmd("search",              "Поиск по имени, расширению, размеру, дате")
     cmd("diff [scan_a] [scan_b]", "Сравнить два скана: что появилось, исчезло, изменилось")
     cmd("purge",               "Удалить старые сканы из БД, оставив N последних на каждый путь")
+    cmd("export",              "Выгрузить каталог в CSV или JSON")
     cmd("explore [путь]",      "Интерактивный проводник: ходить по папкам в терминале")
     print()
     opt("--limit N",           "Количество результатов")
     opt("--scan-id N",         "Использовать конкретный скан")
     opt("--root <путь>",       "Взять последний скан для указанного корня")
+    opt("--under <путь>",      "Показывать только файлы/папки внутри указанного пути (для top и search)")
     print()
     example("disk-analyzer top both --limit 30")
-    example("disk-analyzer top ext")
+    example("disk-analyzer top ext --under /home/dan")
+    example("disk-analyzer search --ext .mp4 --under /home/dan/work")
     example("disk-analyzer duplicates --min-size 1048576")
-    example("disk-analyzer search --ext .mp4 --min-size 104857600")
-    example("disk-analyzer search --name backup --after 2024-01-01")
     example("disk-analyzer diff              # два последних скана")
     example("disk-analyzer diff 12 14        # конкретные сканы")
     example("disk-analyzer purge             # удалить старые, оставить 3 последних")
-    example("disk-analyzer purge --keep 1 --dry-run")
+    example("disk-analyzer export -o catalog.csv")
+    example("disk-analyzer export --format json -o catalog.json")
     example("disk-analyzer explore /home/dan")
 
     # ── Параметры search ───────────────────────────────────
@@ -229,17 +231,19 @@ def cmd_stats(args):
 def cmd_top(args):
     conn = db.connect(args.db)
     scan_id = _resolve_scan_id(conn, args)
+    under = getattr(args, "under", None)
+    suffix = f"  {_dim(f'(в {under})')}" if under else ""
     if args.what in ("files", "both"):
-        print(f"== Топ {args.limit} файлов ==")
-        for path, size in sizes.top_files(conn, scan_id, args.limit):
+        print(f"== Топ {args.limit} файлов{suffix} ==")
+        for path, size in sizes.top_files(conn, scan_id, args.limit, under=under):
             print(f"{human_size(size):>12}  {path}")
     if args.what in ("dirs", "both"):
-        print(f"== Топ {args.limit} папок ==")
-        for path, size in sizes.top_dirs(conn, scan_id, args.limit):
+        print(f"== Топ {args.limit} папок{suffix} ==")
+        for path, size in sizes.top_dirs(conn, scan_id, args.limit, under=under):
             print(f"{human_size(size):>12}  {path}")
     if args.what == "ext":
-        print(f"== Топ {args.limit} расширений по объёму ==")
-        for ext, total, cnt in sizes.top_extensions(conn, scan_id, args.limit):
+        print(f"== Топ {args.limit} расширений по объёму{suffix} ==")
+        for ext, total, cnt in sizes.top_extensions(conn, scan_id, args.limit, under=under):
             print(f"{human_size(total):>12}  {ext:<15} ({cnt} файлов)")
 
 
@@ -274,6 +278,7 @@ def cmd_search(args):
         dirs_only=args.dirs_only,
         files_only=args.files_only,
         limit=args.limit,
+        under=getattr(args, "under", None),
     )
     if not rows:
         print("Ничего не найдено.")
@@ -292,6 +297,48 @@ def cmd_explore(args):
             "SELECT root FROM scans WHERE id = ?", (scan_id,)
         ).fetchone()[0]
     explore.run(conn, scan_id, start_path)
+
+
+def cmd_export(args):
+    import csv
+    import json as _json
+
+    conn = db.connect(args.db)
+    scan_id = _resolve_scan_id(conn, args)
+    cols = ("path", "name", "ext", "size", "is_dir", "mtime", "depth")
+    cursor = conn.execute(
+        f"SELECT {', '.join(cols)} FROM entries WHERE scan_id = ? ORDER BY path",
+        (scan_id,),
+    )
+
+    out_path = args.output
+    f = open(out_path, "w", encoding="utf-8", newline="") if out_path else sys.stdout
+    count = 0
+    try:
+        if args.format == "csv":
+            w = csv.writer(f)
+            w.writerow(cols)
+            for row in cursor:
+                w.writerow(row)
+                count += 1
+        else:
+            f.write("[\n")
+            first = True
+            for row in cursor:
+                if not first:
+                    f.write(",\n")
+                f.write("  " + _json.dumps(dict(zip(cols, row)), ensure_ascii=False))
+                first = False
+                count += 1
+            f.write("\n]\n")
+    finally:
+        if out_path:
+            f.close()
+
+    if out_path:
+        print(f"Экспортировано {count:,} записей в {out_path}")
+    else:
+        print(f"# {count:,} записей", file=sys.stderr)
 
 
 def cmd_purge(args):
@@ -649,6 +696,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_top.add_argument("what", choices=["files", "dirs", "both", "ext"], nargs="?", default="both")
     p_top.add_argument("--scan-id", type=int, dest="scan_id")
     p_top.add_argument("--root", help="Использовать последний скан для этого корня")
+    p_top.add_argument("--under", help="Показывать только файлы/папки внутри указанного пути")
     p_top.add_argument("--limit", type=int, default=20)
     p_top.set_defaults(func=cmd_top)
 
@@ -670,8 +718,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_search.add_argument("--before", help="mtime <= ISO-дата")
     p_search.add_argument("--dirs-only", action="store_true")
     p_search.add_argument("--files-only", action="store_true")
+    p_search.add_argument("--under", help="Ограничить поиск указанным поддеревом")
     p_search.add_argument("--limit", type=int, default=100)
     p_search.set_defaults(func=cmd_search)
+
+    p_export = sub.add_parser("export", help="Выгрузить каталог в CSV или JSON")
+    p_export.add_argument("--format", choices=["csv", "json"], default="csv", help="Формат вывода (по умолчанию csv)")
+    p_export.add_argument("--output", "-o", help="Файл для записи (по умолчанию — stdout)")
+    p_export.add_argument("--scan-id", type=int, dest="scan_id")
+    p_export.add_argument("--root", help="Использовать последний скан для этого корня")
+    p_export.set_defaults(func=cmd_export)
 
     p_purge = sub.add_parser("purge", help="Удалить старые сканы из БД, оставив N последних на каждый путь")
     p_purge.add_argument("--keep", type=int, default=3, help="Сколько последних сканов оставить на каждый путь (по умолчанию 3)")

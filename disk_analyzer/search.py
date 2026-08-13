@@ -16,6 +16,7 @@ def search(
     dirs_only: bool = False,
     files_only: bool = False,
     limit: int = 100,
+    under: str | None = None,
 ) -> list[tuple[str, int, int, str]]:
     """Возвращает список (путь, размер, is_dir, mtime), отсортированный по размеру."""
     clauses = ["scan_id = ?"]
@@ -43,6 +44,10 @@ def search(
         clauses.append("is_dir = 1")
     if files_only:
         clauses.append("is_dir = 0")
+    if under:
+        prefix = under.rstrip("/").rstrip("\\")
+        clauses.append("(path = ? OR path LIKE ? ESCAPE '\\')")
+        params.extend([prefix, _escape_like(prefix) + "/%"])
 
     query = (
         "SELECT path, size, is_dir, mtime FROM entries WHERE "
