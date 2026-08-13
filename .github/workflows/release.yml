@@ -12,10 +12,10 @@ jobs:
         include:
           - os: ubuntu-latest
             artifact: disk-analyzer
-            asset_name: disk-analyzer-linux
+            asset_name: disk-analyzer
           - os: windows-latest
             artifact: disk-analyzer.exe
-            asset_name: disk-analyzer-windows.exe
+            asset_name: disk-analyzer.exe
           - os: macos-latest
             artifact: disk-analyzer
             asset_name: disk-analyzer-macos
@@ -65,7 +65,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/disk-analyzer-linux
+            dist/disk-analyzer
             dist/disk-analyzer-macos
-            dist/disk-analyzer-windows.exe
+            dist/disk-analyzer.exe
           generate_release_notes: true

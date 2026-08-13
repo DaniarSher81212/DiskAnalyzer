@@ -26,17 +26,21 @@
 
 | Платформа | Файл |
 |---|---|
-| Linux | `disk-analyzer-linux` |
+| Linux | `disk-analyzer` |
 | macOS | `disk-analyzer-macos` |
-| Windows | `disk-analyzer-windows.exe` |
+| Windows | `disk-analyzer.exe` |
 
 ```bash
-# Linux / macOS — сделать исполняемым после скачивания
-chmod +x disk-analyzer-linux
-./disk-analyzer-linux help
+# Linux — сделать исполняемым после скачивания
+chmod +x disk-analyzer
+./disk-analyzer help
+
+# macOS
+chmod +x disk-analyzer-macos
+./disk-analyzer-macos help
 
 # Windows
-disk-analyzer-windows.exe help
+disk-analyzer.exe help
 ```
 
 > **macOS:** при первом запуске Gatekeeper может заблокировать файл. Разрешите через:
