@@ -7,6 +7,7 @@ import sys
 import time
 from pathlib import Path
 
+from . import config as cfg_module
 from . import db, duplicates, explore, scanner, search, sizes
 
 
@@ -133,11 +134,66 @@ def cmd_explore(args):
     explore.run(conn, scan_id, start_path)
 
 
+def cmd_setup(args):
+    print("=== Настройка disk-analyzer ===")
+    print(f"Конфиг будет сохранён в: {cfg_module.CONFIG_PATH}\n")
+
+    providers = ["anthropic", "openai", "ollama"]
+    current_default = cfg_module.get_default_provider()
+    default_choice = input(f"Провайдер по умолчанию [{'/'.join(providers)}] (сейчас: {current_default}): ").strip().lower()
+    if default_choice in providers:
+        cfg_module.set_default_provider(default_choice)
+        selected = default_choice
+    else:
+        selected = current_default
+
+    if selected in ("anthropic", "openai"):
+        env_var = "ANTHROPIC_API_KEY" if selected == "anthropic" else "OPENAI_API_KEY"
+        current_key = cfg_module.get_api_key(selected)
+        prompt = f"API-ключ для {selected}"
+        if current_key:
+            prompt += f" (сейчас: {cfg_module.masked(current_key)}, Enter — оставить)"
+        prompt += ": "
+        key = input(prompt).strip()
+        if key:
+            cfg_module.set_provider_setting(selected, "api_key", key)
+
+    if selected == "ollama":
+        current_url = cfg_module.get_ollama_url()
+        url = input(f"URL Ollama (сейчас: {current_url}, Enter — оставить): ").strip()
+        if url:
+            cfg_module.set_provider_setting("ollama", "url", url)
+        current_model = cfg_module.get_model("ollama") or "llama3.1"
+        model = input(f"Модель Ollama (сейчас: {current_model}, Enter — оставить): ").strip()
+        if model:
+            cfg_module.set_provider_setting("ollama", "model", model)
+
+    print(f"\nГотово. Настройки сохранены в {cfg_module.CONFIG_PATH}")
+
+
+def cmd_config_show(args):
+    print(f"Конфиг: {cfg_module.CONFIG_PATH}")
+    if not cfg_module.CONFIG_PATH.exists():
+        print("Файл не найден. Запустите: disk-analyzer setup")
+        return
+    config = cfg_module.load()
+    providers = config.get("providers", {})
+    print(f"Провайдер по умолчанию: {providers.get('default', 'anthropic')}")
+    for name in ("anthropic", "openai", "ollama"):
+        settings = providers.get(name, {})
+        if not settings:
+            continue
+        print(f"\n[{name}]")
+        for k, v in settings.items():
+            display = cfg_module.masked(v) if k == "api_key" else v
+            print(f"  {k} = {display}")
+
+
 def cmd_chat(args):
     from .ai.agent import Agent
     from .ai.providers import get_provider
 
-    provider_name = args.provider or os.environ.get("DISK_ANALYZER_PROVIDER", "anthropic")
+    provider_name = args.provider or os.environ.get("DISK_ANALYZER_PROVIDER") or cfg_module.get_default_provider()
     try:
         provider = get_provider(provider_name)
     except ValueError as exc:
@@ -233,9 +289,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_chat = sub.add_parser("chat", help="Диалог с AI-ассистентом поверх каталога дисков")
     p_chat.add_argument(
         "--provider", choices=["anthropic", "openai", "ollama"],
-        help="LLM-провайдер (по умолчанию — переменная окружения DISK_ANALYZER_PROVIDER или anthropic)",
+        help="LLM-провайдер (по умолчанию — из конфига или anthropic)",
     )
     p_chat.set_defaults(func=cmd_chat)
+
+    p_setup = sub.add_parser("setup", help="Интерактивная настройка: провайдер, API-ключи")
+    p_setup.set_defaults(func=cmd_setup)
+
+    p_config = sub.add_parser("config", help="Управление конфигурацией")
+    config_sub = p_config.add_subparsers(dest="config_command", required=True)
+    p_config_show = config_sub.add_parser("show", help="Показать текущие настройки")
+    p_config_show.set_defaults(func=cmd_config_show)
 
     return parser
 

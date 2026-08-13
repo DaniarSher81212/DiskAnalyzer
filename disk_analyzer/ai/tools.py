@@ -116,6 +116,34 @@ TOOLS: list[ToolSpec] = [
         },
     ),
     ToolSpec(
+        name="propose_deletion",
+        description=(
+            "Предложить пользователю переместить файлы или папки в корзину. "
+            "Показывает список и суммарный размер, запрашивает подтверждение y/N. "
+            "Вызывай только после того, как нашёл конкретные кандидаты через другие инструменты."
+        ),
+        schema={
+            "type": "object",
+            "properties": {
+                "paths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Список путей для удаления",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Почему эти файлы можно удалить (показывается пользователю)",
+                },
+                "total_size_bytes": {
+                    "type": "integer",
+                    "description": "Суммарный размер в байтах",
+                },
+            },
+            "required": ["paths", "reason"],
+            "additionalProperties": False,
+        },
+    ),
+    ToolSpec(
         name="search_files",
         description="Поиск файлов/папок в каталоге по имени, расширению, размеру, дате изменения.",
         schema={
@@ -204,6 +232,41 @@ def dispatch(conn: sqlite3.Connection, name: str, args: dict) -> str:
                 for p in g.paths:
                     lines.append(f"   {p}")
             return "\n".join(lines)
+
+        if name == "propose_deletion":
+            paths = args.get("paths", [])
+            reason = args.get("reason", "")
+            total_size = args.get("total_size_bytes")
+            if not paths:
+                return "Список путей пуст — нечего удалять."
+            print(f"\n{'─' * 60}")
+            print(f"AI предлагает переместить в корзину ({reason}):")
+            for p in paths:
+                print(f"  {p}")
+            if total_size:
+                print(f"Итого: {_human(total_size)}")
+            print('─' * 60)
+            try:
+                answer = input("Переместить в корзину? [y/N]: ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print("")
+                return "Операция отменена пользователем."
+            if answer != "y":
+                return "Пользователь отказался от удаления."
+            from send2trash import send2trash
+            deleted, errors = [], []
+            for path in paths:
+                try:
+                    send2trash(path)
+                    deleted.append(path)
+                except Exception as exc:
+                    errors.append(f"{path}: {exc}")
+            parts = [f"Перемещено в корзину: {len(deleted)} объект(ов)."]
+            if total_size and deleted:
+                parts.append(f"Освобождено: {_human(total_size * len(deleted) / len(paths))}.")
+            if errors:
+                parts.append(f"Ошибки: {'; '.join(errors)}")
+            return " ".join(parts)
 
         if name == "search_files":
             scan_id = _resolve_scan_id(conn, args.get("scan_id"))

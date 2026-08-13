@@ -15,6 +15,8 @@ import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
+from ..config import get_api_key, get_model, get_ollama_url
+
 
 @dataclass
 class ToolSpec:
@@ -55,8 +57,9 @@ class AnthropicProvider(Provider):
     def __init__(self, model: str | None = None, api_key: str | None = None, max_tokens: int = 4096):
         import anthropic
 
-        self.client = anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
-        self.model = model or os.environ.get("DISK_ANALYZER_ANTHROPIC_MODEL", "claude-opus-4-7")
+        resolved_key = api_key or os.environ.get("ANTHROPIC_API_KEY") or get_api_key("anthropic")
+        self.client = anthropic.Anthropic(api_key=resolved_key) if resolved_key else anthropic.Anthropic()
+        self.model = model or os.environ.get("DISK_ANALYZER_ANTHROPIC_MODEL") or get_model("anthropic") or "claude-opus-4-7"
         self.max_tokens = max_tokens
 
     def _to_messages(self, history: list[dict]) -> list[dict]:
@@ -180,8 +183,8 @@ class OpenAIProvider(_OpenAICompatibleProvider):
 
     def __init__(self, model: str | None = None, api_key: str | None = None, max_tokens: int = 4096):
         super().__init__(
-            model=model or os.environ.get("DISK_ANALYZER_OPENAI_MODEL", "gpt-4o"),
-            api_key=api_key,
+            model=model or os.environ.get("DISK_ANALYZER_OPENAI_MODEL") or get_model("openai") or "gpt-4o",
+            api_key=api_key or os.environ.get("OPENAI_API_KEY") or get_api_key("openai"),
             max_tokens=max_tokens,
         )
 
@@ -191,8 +194,8 @@ class OllamaProvider(_OpenAICompatibleProvider):
 
     def __init__(self, model: str | None = None, base_url: str | None = None, max_tokens: int = 4096):
         super().__init__(
-            model=model or os.environ.get("DISK_ANALYZER_OLLAMA_MODEL", "llama3.1"),
-            base_url=(base_url or os.environ.get("DISK_ANALYZER_OLLAMA_URL", "http://localhost:11434")) + "/v1",
+            model=model or os.environ.get("DISK_ANALYZER_OLLAMA_MODEL") or get_model("ollama") or "llama3.1",
+            base_url=(base_url or os.environ.get("DISK_ANALYZER_OLLAMA_URL") or get_ollama_url()) + "/v1",
             api_key="ollama",
             max_tokens=max_tokens,
         )

@@ -1,2 +1,5 @@
 anthropic>=0.40
 openai>=1.50
+platformdirs>=4.0
+send2trash>=1.8
+tomli>=2.0; python_version < "3.11"
