@@ -163,6 +163,22 @@ TOOLS: list[ToolSpec] = [
             "additionalProperties": False,
         },
     ),
+    ToolSpec(
+        name="diff_scans",
+        description=(
+            "Сравнить два скана: показать новые, удалённые и изменившиеся файлы. "
+            "Без аргументов сравнивает два последних скана одного корня."
+        ),
+        schema={
+            "type": "object",
+            "properties": {
+                "scan_a": {"type": "integer", "description": "ID старого скана"},
+                "scan_b": {"type": "integer", "description": "ID нового скана"},
+                "limit": {"type": "integer", "default": 15, "description": "Файлов в каждой категории"},
+            },
+            "additionalProperties": False,
+        },
+    ),
 ]
 
 
@@ -289,6 +305,87 @@ def dispatch(conn: sqlite3.Connection, name: str, args: dict) -> str:
                 f"{'DIR ' if is_dir else 'FILE'} {_human(size):>12}  {mtime or '':<25} {path}"
                 for path, size, is_dir, mtime in rows
             )
+
+        if name == "diff_scans":
+            id_a = args.get("scan_a")
+            id_b = args.get("scan_b")
+            limit = args.get("limit", 15)
+
+            if not id_a or not id_b:
+                latest = conn.execute(
+                    "SELECT root FROM scans WHERE finished_at IS NOT NULL ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+                if not latest:
+                    return "Нет завершённых сканирований."
+                rows = conn.execute(
+                    "SELECT id FROM scans WHERE finished_at IS NOT NULL AND root = ? ORDER BY id DESC LIMIT 2",
+                    (latest[0],),
+                ).fetchall()
+                if len(rows) < 2:
+                    rows = conn.execute(
+                        "SELECT id FROM scans WHERE finished_at IS NOT NULL ORDER BY id DESC LIMIT 2"
+                    ).fetchall()
+                if len(rows) < 2:
+                    return "Нужно минимум два завершённых скана."
+                id_b, id_a = rows[0][0], rows[1][0]
+
+            info_a = conn.execute("SELECT root, started_at FROM scans WHERE id = ?", (id_a,)).fetchone()
+            info_b = conn.execute("SELECT root, started_at FROM scans WHERE id = ?", (id_b,)).fetchone()
+            if not info_a or not info_b:
+                return "Один из scan_id не найден."
+
+            fetch = limit + 1
+            new_rows = conn.execute("""
+                SELECT b.path, b.size FROM entries b
+                WHERE b.scan_id = ? AND b.is_dir = 0
+                  AND NOT EXISTS (SELECT 1 FROM entries WHERE scan_id = ? AND path = b.path)
+                ORDER BY b.size DESC LIMIT ?
+            """, (id_b, id_a, fetch)).fetchall()
+            del_rows = conn.execute("""
+                SELECT a.path, a.size FROM entries a
+                WHERE a.scan_id = ? AND a.is_dir = 0
+                  AND NOT EXISTS (SELECT 1 FROM entries WHERE scan_id = ? AND path = a.path)
+                ORDER BY a.size DESC LIMIT ?
+            """, (id_a, id_b, fetch)).fetchall()
+            changed_rows = conn.execute("""
+                SELECT a.path, a.size, b.size FROM entries a
+                JOIN entries b ON a.path = b.path
+                WHERE a.scan_id = ? AND b.scan_id = ?
+                  AND a.is_dir = 0 AND b.is_dir = 0 AND a.size != b.size
+                ORDER BY ABS(CAST(b.size AS INTEGER) - CAST(a.size AS INTEGER)) DESC LIMIT ?
+            """, (id_a, id_b, fetch)).fetchall()
+
+            lines = [
+                f"Сравнение [{id_a}] {info_a[0]} ({info_a[1][:10]}) "
+                f"→ [{id_b}] {info_b[0]} ({info_b[1][:10]})"
+            ]
+            if not new_rows and not del_rows and not changed_rows:
+                lines.append("Различий не обнаружено.")
+                return "\n".join(lines)
+            if new_rows:
+                shown = new_rows[:limit]
+                more = "+" if len(new_rows) > limit else ""
+                lines.append(f"\nНОВЫЕ (+{len(shown)}{more}):")
+                for path, size in shown:
+                    lines.append(f"  + {_human(size):>12}  {path}")
+            if del_rows:
+                shown = del_rows[:limit]
+                more = "+" if len(del_rows) > limit else ""
+                lines.append(f"\nУДАЛЁНЫЕ (-{len(shown)}{more}):")
+                for path, size in shown:
+                    lines.append(f"  - {_human(size):>12}  {path}")
+            if changed_rows:
+                shown = changed_rows[:limit]
+                more = "+" if len(changed_rows) > limit else ""
+                lines.append(f"\nИЗМЕНЁНЫЕ (~{len(shown)}{more}):")
+                for path, size_a, size_b in shown:
+                    delta = size_b - size_a
+                    sign = "+" if delta >= 0 else ""
+                    lines.append(
+                        f"  ~ {_human(size_b):>12}  {path}  "
+                        f"({_human(size_a)} → {_human(size_b)}, {sign}{_human(delta)})"
+                    )
+            return "\n".join(lines)
 
         return f"Неизвестный инструмент: {name}"
     except Exception as exc:  # инструмент должен вернуть текст ошибки модели, а не уронить агента

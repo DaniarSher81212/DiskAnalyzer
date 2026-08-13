@@ -73,6 +73,7 @@ def cmd_help(args):
     cmd("duplicates",          "Группы файлов-дубликатов по содержимому (BLAKE2b)")
     cmd("search",              "Поиск по имени, расширению, размеру, дате")
     cmd("diff [scan_a] [scan_b]", "Сравнить два скана: что появилось, исчезло, изменилось")
+    cmd("purge",               "Удалить старые сканы из БД, оставив N последних на каждый путь")
     cmd("explore [путь]",      "Интерактивный проводник: ходить по папкам в терминале")
     print()
     opt("--limit N",           "Количество результатов")
@@ -86,6 +87,8 @@ def cmd_help(args):
     example("disk-analyzer search --name backup --after 2024-01-01")
     example("disk-analyzer diff              # два последних скана")
     example("disk-analyzer diff 12 14        # конкретные сканы")
+    example("disk-analyzer purge             # удалить старые, оставить 3 последних")
+    example("disk-analyzer purge --keep 1 --dry-run")
     example("disk-analyzer explore /home/dan")
 
     # ── Параметры search ───────────────────────────────────
@@ -291,6 +294,64 @@ def cmd_explore(args):
     explore.run(conn, scan_id, start_path)
 
 
+def cmd_purge(args):
+    conn = db.connect(args.db)
+    keep = args.keep
+
+    to_delete = conn.execute("""
+        SELECT id, root, started_at, file_count, total_size FROM scans
+        WHERE finished_at IS NULL
+           OR id NOT IN (
+               SELECT id FROM (
+                   SELECT id, ROW_NUMBER() OVER (PARTITION BY root ORDER BY id DESC) as rn
+                   FROM scans WHERE finished_at IS NOT NULL
+               ) WHERE rn <= ?
+           )
+        ORDER BY root, id
+    """, (keep,)).fetchall()
+
+    if not to_delete:
+        print(f"Нечего удалять — по {keep} последних завершённых сканов на каждый путь сохранено.")
+        return
+
+    total_entries = sum(row[3] or 0 for row in to_delete)
+    print(f"Будет удалено {len(to_delete)} сканов ({total_entries:,} записей):")
+    for scan_id, root, started_at, file_count, size in to_delete:
+        status = f"файлов={file_count}" if file_count else "незавершён"
+        print(f"  [{scan_id}] {root}  {(started_at or '')[:19]}  {status}  {human_size(size or 0)}")
+
+    if args.dry_run:
+        print("\n(--dry-run: ничего не удалено)")
+        return
+
+    try:
+        answer = input("\nУдалить? [y/N]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print("")
+        return
+    if answer != "y":
+        print("Отменено.")
+        return
+
+    db_path = conn.execute("PRAGMA database_list").fetchone()[2]
+
+    ids = [row[0] for row in to_delete]
+    conn.execute(f"DELETE FROM scans WHERE id IN ({','.join('?' * len(ids))})", ids)
+    conn.commit()
+
+    print("Очистка базы данных (VACUUM)...")
+    conn.execute("VACUUM")
+
+    size_before, size_after = None, None
+    if db_path:
+        p = Path(db_path)
+        if p.exists():
+            size_after = p.stat().st_size
+
+    freed_msg = f", освобождено {human_size(size_before - size_after)}" if size_before and size_after else ""
+    print(f"Готово: удалено {len(ids)} сканов{freed_msg}.")
+
+
 def cmd_diff(args):
     conn = db.connect(args.db)
 
@@ -461,6 +522,7 @@ _TOOL_LABELS = {
     "find_duplicates": "поиск дубликатов",
     "search_files":    "поиск файлов",
     "propose_deletion":"удаление файлов",
+    "diff_scans":      "сравнение сканов",
 }
 
 
@@ -610,6 +672,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_search.add_argument("--files-only", action="store_true")
     p_search.add_argument("--limit", type=int, default=100)
     p_search.set_defaults(func=cmd_search)
+
+    p_purge = sub.add_parser("purge", help="Удалить старые сканы из БД, оставив N последних на каждый путь")
+    p_purge.add_argument("--keep", type=int, default=3, help="Сколько последних сканов оставить на каждый путь (по умолчанию 3)")
+    p_purge.add_argument("--dry-run", action="store_true", help="Показать что будет удалено, не удаляя")
+    p_purge.set_defaults(func=cmd_purge)
 
     p_diff = sub.add_parser("diff", help="Сравнить два скана — что появилось, исчезло, изменилось")
     p_diff.add_argument("scan_a", type=int, nargs="?", help="ID старого скана (по умолчанию — предпоследний)")
