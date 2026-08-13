@@ -2,7 +2,7 @@
 
 Инструмент для анализа содержимого дисков. Сканирует файловую систему, сохраняет каталог в SQLite-базу и позволяет исследовать его через CLI или диалог с AI-ассистентом.
 
-Работает на **Windows**, **Linux** и **macOS**. Данные хранятся локально — никуда не отправляются.
+Работает на **Windows**, **Linux** и **macOS**. Python не нужен. Данные хранятся локально — никуда не отправляются.
 
 ---
 
@@ -13,73 +13,114 @@
 - Поиск дубликатов по содержимому (трёхэтапное хэширование, не по имени)
 - Поиск файлов по имени, расширению, размеру, дате изменения
 - Интерактивный проводник — ходить по папкам прямо в терминале
-- AI-чат поверх каталога: задавать вопросы на естественном языке
+- AI-чат поверх каталога: задавать вопросы на естественном языке, удалять файлы с подтверждением
 - Поддержка нескольких LLM-провайдеров: Anthropic (Claude), OpenAI, Ollama
+- Конфиг-файл для хранения API-ключей между сеансами
 
 ---
 
-## Установка
+## Скачать
+
+Готовые бинарники для всех платформ — на странице [Releases](https://github.com/DaniarSher81212/DiskAnalyzer/releases/latest):
+
+| Платформа | Файл |
+|---|---|
+| Linux | `disk-analyzer-linux` |
+| macOS | `disk-analyzer-macos` |
+| Windows | `disk-analyzer-windows.exe` |
+
+```bash
+# Linux / macOS — сделать исполняемым после скачивания
+chmod +x disk-analyzer-linux
+./disk-analyzer-linux help
+
+# Windows
+disk-analyzer-windows.exe help
+```
+
+> **macOS:** при первом запуске Gatekeeper может заблокировать файл. Разрешите через:
+> ```bash
+> xattr -d com.apple.quarantine ./disk-analyzer-macos
+> ```
+
+---
+
+## Первый запуск
+
+```bash
+# 1. Настроить провайдера и API-ключ
+./disk-analyzer setup
+
+# 2. Просканировать диск
+./disk-analyzer scan /home
+
+# 3. Посмотреть что занимает больше всего места
+./disk-analyzer top
+
+# 4. Поговорить с AI про содержимое диска
+./disk-analyzer chat
+```
+
+Полная справка по всем командам:
+```bash
+./disk-analyzer help
+```
+
+---
+
+## Установка из исходников
 
 **Требования:** Python 3.10+
 
 ```bash
-git clone <repo>
+git clone https://github.com/DaniarSher81212/DiskAnalyzer
 cd DiskAnalyzer
 pip install -r requirements.txt
-```
-
-Для AI-чата нужен как минимум один провайдер:
-
-```bash
-pip install anthropic   # для Claude
-pip install openai      # для OpenAI или Ollama
-```
-
----
-
-## Быстрый старт
-
-```bash
-# Просканировать диск
-python3 main.py scan /home
-
-# Показать что занимает больше всего места
-python3 main.py top
-
-# Поговорить с AI про содержимое диска
-python3 main.py chat
+python3 main.py help
 ```
 
 ---
 
 ## Команды
 
+### `setup` — первый запуск
+
+```bash
+disk-analyzer setup
+```
+
+Интерактивный мастер: выбор провайдера, ввод API-ключа, URL Ollama. Настройки сохраняются в `~/.config/disk-analyzer/config.toml`.
+
+```bash
+disk-analyzer config show   # посмотреть текущие настройки
+```
+
+---
+
 ### `scan` — сканирование
 
 ```
-python3 main.py scan <путь> [опции]
+disk-analyzer scan <путь> [опции]
 ```
 
 | Опция | Описание |
 |---|---|
 | `--one-filesystem` | Не выходить за пределы одной ФС (аналог `find -xdev`). **Обязательно при сканировании `/`**, иначе snap/bind-маунты раздуют счётчик |
 | `--follow-reparse` | Заходить в symlink и junction-точки (по умолчанию пропускаются) |
-| `--db <путь>` | Путь к SQLite-базе (по умолчанию `disk_catalog.db` рядом со скриптом) |
-
-Примеры:
+| `--db <путь>` | Путь к SQLite-базе (по умолчанию `disk_catalog.db` рядом с бинарником) |
 
 ```bash
-python3 main.py scan C:\                        # Windows, весь диск C
-python3 main.py scan / --one-filesystem         # Linux, корневая ФС без mount-ов
-python3 main.py scan /home/dan --db ~/my.db     # с нестандартной базой
+disk-analyzer scan C:\                        # Windows, весь диск C
+disk-analyzer scan / --one-filesystem         # Linux, корневая ФС без маунтов
+disk-analyzer scan /home/dan --db ~/my.db     # с нестандартной базой
 ```
 
 ---
 
 ### `stats` — история сканирований
 
-```
-python3 main.py stats [--limit 10]
+```bash
+disk-analyzer stats [--limit 10]
 ```
 
 Показывает последние N сканов: путь, дата, количество файлов и папок, суммарный размер, число ошибок доступа.
@@ -89,7 +130,7 @@ python3 main.py stats [--limit 10]
 ### `top` — крупнейшие файлы и папки
 
 ```
-python3 main.py top [files|dirs|both|ext] [опции]
+disk-analyzer top [files|dirs|both|ext] [опции]
 ```
 
 | Аргумент | Описание |
@@ -100,8 +141,8 @@ python3 main.py top [files|dirs|both|ext] [опции]
 | `ext` | Топ расширений по суммарному объёму |
 
 ```bash
-python3 main.py top both --limit 30
-python3 main.py top ext --scan-id 5
+disk-analyzer top both --limit 30
+disk-analyzer top ext --scan-id 5
 ```
 
 ---
@@ -109,7 +150,7 @@ python3 main.py top ext --scan-id 5
 ### `duplicates` — поиск дубликатов
 
 ```
-python3 main.py duplicates [опции]
+disk-analyzer duplicates [опции]
 ```
 
 Находит группы файлов с одинаковым содержимым. Работает в три прохода:
@@ -124,7 +165,7 @@ python3 main.py duplicates [опции]
 | `--scan-id N` | Использовать конкретный скан |
 
 ```bash
-python3 main.py duplicates --min-size 1048576   # только файлы от 1 МБ
+disk-analyzer duplicates --min-size 1048576   # только файлы от 1 МБ
 ```
 
 ---
@@ -132,7 +173,7 @@ python3 main.py duplicates --min-size 1048576   # только файлы от 1
 ### `search` — поиск файлов
 
 ```
-python3 main.py search [опции]
+disk-analyzer search [опции]
 ```
 
 | Опция | Описание |
@@ -148,8 +189,8 @@ python3 main.py search [опции]
 | `--limit N` | Лимит результатов (по умолчанию 100) |
 
 ```bash
-python3 main.py search --ext .mp4 --min-size 104857600   # видео от 100 МБ
-python3 main.py search --name backup --after 2024-01-01  # бэкапы за 2024+
+disk-analyzer search --ext .mp4 --min-size 104857600   # видео от 100 МБ
+disk-analyzer search --name backup --after 2024-01-01  # бэкапы за 2024+
 ```
 
 ---
@@ -157,7 +198,7 @@ python3 main.py search --name backup --after 2024-01-01  # бэкапы за 202
 ### `explore` — интерактивный проводник
 
 ```
-python3 main.py explore [путь]
+disk-analyzer explore [путь]
 ```
 
 Текстовый проводник: показывает содержимое папки постранично (25 элементов), отсортированное по размеру.
@@ -170,8 +211,8 @@ python3 main.py explore [путь]
 | `q` | Выход |
 
 ```bash
-python3 main.py explore                  # с корня последнего скана
-python3 main.py explore /home/dan        # с конкретной папки
+disk-analyzer explore                  # с корня последнего скана
+disk-analyzer explore /home/dan        # с конкретной папки
 ```
 
 ---
@@ -179,36 +220,29 @@ python3 main.py explore /home/dan        # с конкретной папки
 ### `chat` — диалог с AI
 
 ```
-python3 main.py chat [--provider anthropic|openai|ollama]
+disk-analyzer chat [--provider anthropic|openai|ollama]
 ```
 
-AI-ассистент умеет читать каталог через встроенные инструменты: смотреть топы, искать дубликаты, листать папки, запускать новые сканы. Удалять или изменять файлы не может — только анализировать.
+AI-ассистент работает с каталогом через инструменты: смотрит топы, ищет дубликаты, листает папки, запускает сканы. Может предложить удалить файлы — файлы перемещаются в **корзину ОС** (не удаляются навсегда), каждое удаление требует подтверждения `y/N`.
 
-**Настройка провайдера:**
+**Настройка провайдера** (приоритет: CLI-флаг → ENV → конфиг-файл):
 
-| Провайдер | Переменная окружения | Ключ |
+| Провайдер | ENV-переменная | Конфиг |
 |---|---|---|
-| Anthropic (по умолчанию) | `DISK_ANALYZER_ANTHROPIC_MODEL` (модель) | `ANTHROPIC_API_KEY` |
-| OpenAI | `DISK_ANALYZER_OPENAI_MODEL` | `OPENAI_API_KEY` |
-| Ollama (локально) | `DISK_ANALYZER_OLLAMA_MODEL`, `DISK_ANALYZER_OLLAMA_URL` | не нужен |
+| Anthropic (по умолчанию) | `ANTHROPIC_API_KEY` | `~/.config/disk-analyzer/config.toml` |
+| OpenAI | `OPENAI_API_KEY` | тот же файл |
+| Ollama (локально) | `DISK_ANALYZER_OLLAMA_URL` | тот же файл |
 
 ```bash
-# Claude (по умолчанию)
-export ANTHROPIC_API_KEY=sk-ant-...
-python3 main.py chat
-
-# GPT-4o
-export OPENAI_API_KEY=sk-...
-python3 main.py chat --provider openai
-
-# Локальная модель через Ollama
-python3 main.py chat --provider ollama
+disk-analyzer chat                       # Claude (из конфига или ENV)
+disk-analyzer chat --provider openai     # GPT-4o
+disk-analyzer chat --provider ollama     # локальная модель
 ```
 
 Примеры запросов к AI:
 ```
 > Что занимает больше всего места?
-> Найди дубликаты на диске, сколько можно освободить?
+> Найди дубликаты и удали их
 > Покажи все .iso файлы крупнее 1 ГБ
 > Есть ли старые логи в /var/log?
 ```
@@ -217,7 +251,7 @@ python3 main.py chat --provider ollama
 
 ## База данных
 
-По умолчанию каталог хранится в `disk_catalog.db` рядом со скриптом. Это обычный SQLite-файл — можно открыть любым инструментом (DB Browser for SQLite, DBeaver и т.п.).
+По умолчанию каталог хранится в `disk_catalog.db` рядом с бинарником. Это обычный SQLite-файл — можно открыть любым инструментом (DB Browser for SQLite, DBeaver и т.п.).
 
 **Схема:**
 
@@ -230,14 +264,14 @@ entries(scan_id, path, parent, name, ext, size, is_dir, mtime, depth)
 
 ---
 
-## Сборка в исполняемый файл
+## Сборка из исходников
 
 ```bash
 pip install -r requirements-dev.txt
 python3 build.py
 ```
 
-Результат: `dist/disk-analyzer` (Linux/macOS) или `dist/disk-analyzer.exe` (Windows). Сборка кроссплатформенная — для каждой ОС нужно запускать на ней же.
+Результат: `dist/disk-analyzer` (Linux/macOS) или `dist/disk-analyzer.exe` (Windows). Для каждой ОС нужно собирать отдельно — релизные бинарники собираются автоматически через GitHub Actions при пуше тега `v*.*.*`.
 
 ---
 
@@ -247,10 +281,11 @@ python3 build.py
 DiskAnalyzer/
 ├── main.py                  # точка входа
 ├── build.py                 # сборка через PyInstaller
-├── requirements.txt         # зависимости (anthropic, openai)
+├── requirements.txt         # зависимости
 ├── requirements-dev.txt     # + pyinstaller
 └── disk_analyzer/
-    ├── cli.py               # CLI, парсинг аргументов, команды
+    ├── cli.py               # CLI, парсинг аргументов, все команды
+    ├── config.py            # конфиг-файл (TOML, platformdirs)
     ├── db.py                # SQLite: схема, подключение
     ├── scanner.py           # обход ФС, запись в БД
     ├── sizes.py             # топ файлов/папок/расширений
@@ -260,5 +295,5 @@ DiskAnalyzer/
     └── ai/
         ├── agent.py         # цикл tool-use, хранение истории
         ├── providers.py     # Anthropic / OpenAI / Ollama
-        └── tools.py         # инструменты агента (8 функций)
+        └── tools.py         # инструменты агента (9 функций)
 ```
