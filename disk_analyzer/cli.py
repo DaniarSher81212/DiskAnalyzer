@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -330,9 +331,62 @@ def cmd_config_show(args):
             print(f"  {k} = {display}")
 
 
+_TOOL_LABELS = {
+    "list_scans":      "история сканов",
+    "scan_disk":       "сканирование диска",
+    "top_folders":     "крупнейшие папки",
+    "top_files":       "крупнейшие файлы",
+    "top_extensions":  "топ расширений",
+    "list_folder":     "содержимое папки",
+    "find_duplicates": "поиск дубликатов",
+    "search_files":    "поиск файлов",
+    "propose_deletion":"удаление файлов",
+}
+
+
+class _Spinner:
+    _FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+    def __init__(self) -> None:
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._active = False
+
+    def start(self) -> None:
+        if not sys.stdout.isatty() or self._active:
+            return
+        self._stop.clear()
+        self._active = True
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        if not self._active:
+            return
+        self._stop.set()
+        if self._thread:
+            self._thread.join()
+        print("\r\033[K", end="", flush=True)
+        self._active = False
+
+    def _run(self) -> None:
+        i = 0
+        while not self._stop.is_set():
+            print(f"\r\033[2m{self._FRAMES[i % 10]} Думаю...\033[0m", end="", flush=True)
+            i += 1
+            time.sleep(0.08)
+
+
 def cmd_chat(args):
     from .ai.agent import Agent
     from .ai.providers import get_provider
+
+    # readline: история команд между сообщениями
+    try:
+        import readline
+        readline.set_history_length(500)
+    except ImportError:
+        pass
 
     provider_name = args.provider or os.environ.get("DISK_ANALYZER_PROVIDER") or cfg_module.get_default_provider()
     try:
@@ -350,21 +404,37 @@ def cmd_chat(args):
 
     conn = db.connect(args.db)
     agent = Agent(provider, conn)
-    print(f"Чат с AI ({provider_name}). Пустая строка или Ctrl+C — выход.")
+    spinner = _Spinner()
+
+    def on_tool_call(name: str) -> None:
+        spinner.stop()
+        label = _TOOL_LABELS.get(name, name)
+        print(f"\033[2m  → {label}...\033[0m", flush=True)
+
+    def on_tool_end(name: str) -> None:
+        if name != "propose_deletion":
+            spinner.start()
+
+    print(f"\nЧат с AI ({_bold(_cyan(provider_name))}). {_dim('Ctrl+C или пустая строка — выход.')}\n")
+
     while True:
         try:
-            user_message = input("> ").strip()
+            user_message = input(_bold("> ") if sys.stdout.isatty() else "> ").strip()
         except (EOFError, KeyboardInterrupt):
             print("")
             return
         if not user_message:
             return
+
+        spinner.start()
         try:
-            answer = agent.ask(user_message)
+            answer = agent.ask(user_message, on_tool_call=on_tool_call, on_tool_end=on_tool_end)
         except Exception as exc:
+            spinner.stop()
             print(f"Ошибка: {exc}", file=sys.stderr)
             continue
-        print(answer)
+        spinner.stop()
+        print(f"\n{answer}\n")
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
+from typing import Callable
 
 from . import tools as tools_module
 from .providers import Provider
@@ -28,7 +29,13 @@ class Agent:
         self.system = system
         self.history: list[dict] = []
 
-    def ask(self, user_message: str) -> str:
+    def ask(
+        self,
+        user_message: str,
+        *,
+        on_tool_call: Callable[[str], None] | None = None,
+        on_tool_end: Callable[[str], None] | None = None,
+    ) -> str:
         self.history.append({"role": "user", "content": user_message})
 
         for _ in range(MAX_TOOL_ITERATIONS):
@@ -44,7 +51,11 @@ class Agent:
                 "tool_calls": turn.tool_calls,
             })
             for call in turn.tool_calls:
+                if on_tool_call:
+                    on_tool_call(call.name)
                 result = tools_module.dispatch(self.conn, call.name, call.input)
+                if on_tool_end:
+                    on_tool_end(call.name)
                 self.history.append({
                     "role": "tool_result",
                     "tool_call_id": call.id,
