@@ -1,0 +1,247 @@
+"""Командная строка disk-analyzer."""
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+import time
+from pathlib import Path
+
+from . import db, duplicates, explore, scanner, search, sizes
+
+
+def human_size(n: float) -> str:
+    for unit in ("Б", "КБ", "МБ", "ГБ", "ТБ", "ПБ"):
+        if abs(n) < 1024:
+            return f"{n:,.1f} {unit}".replace(",", " ")
+        n /= 1024
+    return f"{n:,.1f} ЭБ".replace(",", " ")
+
+
+def _resolve_scan_id(conn, args) -> int:
+    scan_id = getattr(args, "scan_id", None)
+    if scan_id:
+        return scan_id
+    root = getattr(args, "root", None)
+    found = db.latest_scan_id(conn, root)
+    if found is None:
+        print("Нет завершённых сканирований. Сначала выполните: scan <путь>", file=sys.stderr)
+        sys.exit(1)
+    return found
+
+
+def cmd_scan(args):
+    conn = db.connect(args.db)
+    print(f"Сканирование {args.path} ...")
+    t0 = time.time()
+    scan_id = scanner.scan(args.path, conn, follow_reparse=args.follow_reparse, one_filesystem=args.one_filesystem)
+    elapsed = time.time() - t0
+    row = conn.execute(
+        "SELECT file_count, dir_count, total_size, errors FROM scans WHERE id = ?",
+        (scan_id,),
+    ).fetchone()
+    file_count, dir_count, total_size, errors = row
+    print(
+        f"Готово за {elapsed:.1f}с: scan_id={scan_id}, файлов={file_count}, "
+        f"папок={dir_count}, объём={human_size(total_size)}, ошибок={errors}"
+    )
+
+
+def cmd_stats(args):
+    conn = db.connect(args.db)
+    rows = conn.execute(
+        "SELECT id, root, started_at, finished_at, file_count, dir_count, total_size, errors "
+        "FROM scans ORDER BY id DESC LIMIT ?",
+        (args.limit,),
+    ).fetchall()
+    if not rows:
+        print("Сканирований пока нет.")
+        return
+    for scan_id, root, started, finished, fc, dc, size, errors in rows:
+        status = "завершено" if finished else "прервано"
+        print(
+            f"[{scan_id}] {root} — {status}, файлов={fc}, папок={dc}, "
+            f"объём={human_size(size)}, ошибок={errors}, начато={started}"
+        )
+
+
+def cmd_top(args):
+    conn = db.connect(args.db)
+    scan_id = _resolve_scan_id(conn, args)
+    if args.what in ("files", "both"):
+        print(f"== Топ {args.limit} файлов ==")
+        for path, size in sizes.top_files(conn, scan_id, args.limit):
+            print(f"{human_size(size):>12}  {path}")
+    if args.what in ("dirs", "both"):
+        print(f"== Топ {args.limit} папок ==")
+        for path, size in sizes.top_dirs(conn, scan_id, args.limit):
+            print(f"{human_size(size):>12}  {path}")
+    if args.what == "ext":
+        print(f"== Топ {args.limit} расширений по объёму ==")
+        for ext, total, cnt in sizes.top_extensions(conn, scan_id, args.limit):
+            print(f"{human_size(total):>12}  {ext:<15} ({cnt} файлов)")
+
+
+def cmd_duplicates(args):
+    conn = db.connect(args.db)
+    scan_id = _resolve_scan_id(conn, args)
+    print("Поиск дубликатов (это может занять время на больших каталогах)...")
+    groups = duplicates.find_duplicates(conn, scan_id, min_size=args.min_size)
+    if not groups:
+        print("Дубликаты не найдены.")
+        return
+    total_wasted = sum(g.wasted_bytes for g in groups)
+    for g in groups[: args.limit]:
+        print(f"\n-- {human_size(g.size)} x{len(g.paths)}, лишнее место: {human_size(g.wasted_bytes)}")
+        for p in g.paths:
+            print(f"   {p}")
+    print(f"\nВсего групп: {len(groups)}. Потенциально можно освободить: {human_size(total_wasted)}")
+
+
+def cmd_search(args):
+    conn = db.connect(args.db)
+    scan_id = _resolve_scan_id(conn, args)
+    rows = search.search(
+        conn,
+        scan_id,
+        name=args.name,
+        ext=args.ext,
+        min_size=args.min_size,
+        max_size=args.max_size,
+        after=args.after,
+        before=args.before,
+        dirs_only=args.dirs_only,
+        files_only=args.files_only,
+        limit=args.limit,
+    )
+    if not rows:
+        print("Ничего не найдено.")
+        return
+    for path, size, is_dir, mtime in rows:
+        kind = "DIR " if is_dir else "FILE"
+        print(f"{kind} {human_size(size):>12}  {mtime or '':<25} {path}")
+
+
+def cmd_explore(args):
+    conn = db.connect(args.db)
+    scan_id = _resolve_scan_id(conn, args)
+    start_path = args.path
+    if start_path is None:
+        start_path = conn.execute(
+            "SELECT root FROM scans WHERE id = ?", (scan_id,)
+        ).fetchone()[0]
+    explore.run(conn, scan_id, start_path)
+
+
+def cmd_chat(args):
+    from .ai.agent import Agent
+    from .ai.providers import get_provider
+
+    provider_name = args.provider or os.environ.get("DISK_ANALYZER_PROVIDER", "anthropic")
+    try:
+        provider = get_provider(provider_name)
+    except ValueError as exc:
+        print(exc, file=sys.stderr)
+        sys.exit(1)
+    except ImportError as exc:
+        print(
+            f"Не удалось загрузить провайдера '{provider_name}': {exc}\n"
+            f"Установите зависимость: pip install anthropic  (или openai — для openai/ollama)",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    conn = db.connect(args.db)
+    agent = Agent(provider, conn)
+    print(f"Чат с AI ({provider_name}). Пустая строка или Ctrl+C — выход.")
+    while True:
+        try:
+            user_message = input("> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("")
+            return
+        if not user_message:
+            return
+        try:
+            answer = agent.ask(user_message)
+        except Exception as exc:
+            print(f"Ошибка: {exc}", file=sys.stderr)
+            continue
+        print(answer)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="disk-analyzer", description="Анализ содержимого дисков"
+    )
+    parser.add_argument(
+        "--db", type=Path, default=db.DEFAULT_DB_PATH,
+        help=f"Путь к файлу каталога SQLite (по умолчанию: {db.DEFAULT_DB_PATH})",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p_scan = sub.add_parser("scan", help="Просканировать путь и сохранить каталог в БД")
+    p_scan.add_argument("path", help="Путь для сканирования, например C:\\ или D:\\Data")
+    p_scan.add_argument(
+        "--follow-reparse", action="store_true",
+        help="Заходить в symlink/junction точки (по умолчанию пропускаются во избежание циклов)",
+    )
+    p_scan.add_argument(
+        "--one-filesystem", action="store_true",
+        help="Не переходить на другие файловые системы (аналог find -xdev, полезно при сканировании /)",
+    )
+    p_scan.set_defaults(func=cmd_scan)
+
+    p_stats = sub.add_parser("stats", help="Показать историю сканирований")
+    p_stats.add_argument("--limit", type=int, default=10)
+    p_stats.set_defaults(func=cmd_stats)
+
+    p_top = sub.add_parser("top", help="Крупнейшие файлы/папки/расширения")
+    p_top.add_argument("what", choices=["files", "dirs", "both", "ext"], nargs="?", default="both")
+    p_top.add_argument("--scan-id", type=int, dest="scan_id")
+    p_top.add_argument("--root", help="Использовать последний скан для этого корня")
+    p_top.add_argument("--limit", type=int, default=20)
+    p_top.set_defaults(func=cmd_top)
+
+    p_dup = sub.add_parser("duplicates", help="Найти файлы-дубликаты по содержимому")
+    p_dup.add_argument("--scan-id", type=int, dest="scan_id")
+    p_dup.add_argument("--root", help="Использовать последний скан для этого корня")
+    p_dup.add_argument("--min-size", type=int, default=1024, help="Игнорировать файлы меньше N байт")
+    p_dup.add_argument("--limit", type=int, default=50, help="Сколько групп показать")
+    p_dup.set_defaults(func=cmd_duplicates)
+
+    p_search = sub.add_parser("search", help="Поиск файлов/папок в каталоге")
+    p_search.add_argument("--scan-id", type=int, dest="scan_id")
+    p_search.add_argument("--root", help="Использовать последний скан для этого корня")
+    p_search.add_argument("--name", help="Подстрока в имени файла/папки")
+    p_search.add_argument("--ext", help="Расширение, например .pdf")
+    p_search.add_argument("--min-size", type=int, dest="min_size")
+    p_search.add_argument("--max-size", type=int, dest="max_size")
+    p_search.add_argument("--after", help="mtime >= ISO-дата")
+    p_search.add_argument("--before", help="mtime <= ISO-дата")
+    p_search.add_argument("--dirs-only", action="store_true")
+    p_search.add_argument("--files-only", action="store_true")
+    p_search.add_argument("--limit", type=int, default=100)
+    p_search.set_defaults(func=cmd_search)
+
+    p_explore = sub.add_parser("explore", help="Интерактивный просмотр каталога (зайти/выйти из папок)")
+    p_explore.add_argument("path", nargs="?", default=None, help="С какой папки начать (по умолчанию — корень скана)")
+    p_explore.add_argument("--scan-id", type=int, dest="scan_id")
+    p_explore.add_argument("--root", help="Использовать последний скан для этого корня")
+    p_explore.set_defaults(func=cmd_explore)
+
+    p_chat = sub.add_parser("chat", help="Диалог с AI-ассистентом поверх каталога дисков")
+    p_chat.add_argument(
+        "--provider", choices=["anthropic", "openai", "ollama"],
+        help="LLM-провайдер (по умолчанию — переменная окружения DISK_ANALYZER_PROVIDER или anthropic)",
+    )
+    p_chat.set_defaults(func=cmd_chat)
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    args.func(args)
+    return 0

@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+disk_catalog.db
+.idea/
+dist/
+build/
+*.spec
